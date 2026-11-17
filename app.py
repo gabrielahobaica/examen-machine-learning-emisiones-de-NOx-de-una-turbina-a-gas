@@ -89,7 +89,7 @@ with der:
     sub["Ventana segura"] = (sub["P(Crítico)"] <= umbral) & ~(solo_frecuentes & sub["Poco frecuente"])
     base = alt.Chart(sub).encode(
         x=alt.X("TEY:O", title="Carga TEY (MWh)", axis=alt.Axis(format=".0f")),
-        y=alt.Y("TIT:O", title="TIT (°C)", sort="descending", axis=alt.Axis(format=".0f")))
+        y=alt.Y("TIT:O", title="TIT (°C)", sort=sorted(niveles["TIT"], reverse=True), axis=alt.Axis(format=".0f")))
     mapa = base.mark_rect().encode(
         opacity=alt.condition("datum['Poco frecuente']", alt.value(0.25), alt.value(1.0)),
         color=alt.Color("P(Crítico):Q", scale=alt.Scale(scheme="redyellowgreen", reverse=True, domain=[0, 1])),
