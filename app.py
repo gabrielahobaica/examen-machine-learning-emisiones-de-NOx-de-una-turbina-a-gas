@@ -29,6 +29,7 @@ st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&display=swap');
 html, body, [class*="st-"], .stMarkdown, .stDataFrame, button, input {{ font-family: 'Barlow', sans-serif; }}
+[data-testid="stIconMaterial"], .material-symbols-rounded {{ font-family: 'Material Symbols Rounded' !important; }}
 h1, h2, h3 {{ font-family: 'Barlow Condensed', sans-serif !important; font-weight: 600 !important; letter-spacing: .01em; color: {GRIS_TINTA}; }}
 h1 {{ font-size: 2.3rem !important; margin-bottom: 0 !important; }}
 h3 {{ font-size: 1.35rem !important; }}
@@ -78,6 +79,19 @@ except AttributeError:  # versiones anteriores
 
 AQUI = Path(__file__).parent
 
+def con_reinicio(control, etiqueta, clave, original, **kw):
+    """Dibuja un deslizador con un boton al lado que lo devuelve a su valor original."""
+    if clave not in st.session_state:
+        st.session_state[clave] = original
+    izq, der = st.columns([6, 1], vertical_alignment="bottom")
+    with der:
+        st.button("", icon=":material/restart_alt:", key=f"rst_{clave}", help="Volver al valor original",
+                  on_click=lambda: st.session_state.update({clave: original}))
+    with izq:
+        return control(etiqueta, key=clave, **kw)
+
+F1_TEST = 0.862  # F1 macro de TabPFN en test (notebook, Parte C)
+
 
 @st.cache_data
 def leer(origen):
@@ -107,8 +121,25 @@ def pesos(x):
 # ---------------------------------------------------------------- encabezado
 st.title("Control de emisiones de NOx en la turbina a gas")
 st.markdown('<p class="sub">Herramienta de apoyo a la sala de control: anticipa las horas con emisión crítica de NOx '
-            '(≥ 80 mg/m³) a partir de las variables de operación, usando TabPFN (F1 macro 0,853 en test). '
+            '(≥ 80 mg/m³) a partir de las variables de operación, usando TabPFN (F1 macro ' + f'{F1_TEST:.3f}'.replace('.', ',') + ' en test). '
             'Gris significa operación normal; el color aparece solo cuando hay que actuar.</p>', unsafe_allow_html=True)
+
+# supuestos del ROI (fuentes en el notebook, Parte D.4)
+TEY_MEDIO, USD_CLP, UTA = 133.51, 903.38, 865_812
+SUELDO_DS, GPU_USD_HORA = 1_423_554, 0.42
+C_MODELO = 2 * SUELDO_DS + 0.25 * SUELDO_DS * 12 + 365 * GPU_USD_HORA * USD_CLP
+C_INT_BASE = TEY_MEDIO * 0.05 * 96.1 * USD_CLP
+
+ranking = leer(AQUI / "plan_ranking.csv") if (AQUI / "plan_ranking.csv").exists() else None
+MB = None
+if ranking is not None:  # metricas del escenario MB (3 h/dia) para la pestaña de seguimiento
+    _c = (ranking.sort_values("P(Crítico)", ascending=False)["Clase real"] == "Crítico").to_numpy()
+    _n, _tot = len(_c), _c.sum()
+    _k = int(round(3 / 24 * _n)); _tp = int(_c[:_k].sum()); _dias = _n / 24
+    _tp_anio = 3 * 365 * _tp / _k
+    MB = dict(n=_n, tot=_tot, tp=_tp, k=_k, recall=_tp / _tot, prec=_tp / _k, fp_dia=(_k - _tp) / _dias,
+                perdidas=_tot - _tp, perdidas_anio=(_tot - _tp) / _dias * 365, fp_anio=3 * 365 - _tp_anio,
+                tasa_crit=_tot / _n, eq=(3 * 365 * C_INT_BASE + C_MODELO) / _tp_anio / UTA)
 
 tab_sim, tab_plan, tab_acc = st.tabs(["Simulador de operación", "Plan de intervención", "Acciones y seguimiento"])
 
@@ -126,15 +157,15 @@ with tab_sim:
         ctrl, vista = st.columns([1, 2.6], gap="large")
         with ctrl:
             st.subheader("Condiciones")
-            at = st.select_slider("Temperatura ambiente, AT (°C)", options=niveles["AT"], value=inicio["AT"],
+            at = con_reinicio(st.select_slider, "Temperatura ambiente, AT (°C)", "at", inicio["AT"], options=niveles["AT"],
                                   format_func=lambda v: f"{v:.1f}", help="No la controla la central: define el día.")
             st.subheader("Punto de operación")
-            tey = st.select_slider("Carga, TEY (MWh)", options=niveles["TEY"], value=inicio["TEY"],
+            tey = con_reinicio(st.select_slider, "Carga, TEY (MWh)", "tey", inicio["TEY"], options=niveles["TEY"],
                                    format_func=lambda v: f"{v:.0f}")
-            tit = st.select_slider("Temperatura de entrada a la turbina, TIT (°C)", options=niveles["TIT"],
-                                   value=inicio["TIT"], format_func=lambda v: f"{v:.0f}")
+            tit = con_reinicio(st.select_slider, "Temperatura de entrada a la turbina, TIT (°C)", "tit", inicio["TIT"],
+                                   options=niveles["TIT"], format_func=lambda v: f"{v:.0f}")
             st.subheader("Criterio de ventana segura")
-            umbral = st.slider("P(Crítico) máxima aceptada", 0.02, 0.50, 0.10, 0.01, format="%.2f",
+            umbral = con_reinicio(st.slider, "P(Crítico) máxima aceptada", "umbral", 0.10, min_value=0.02, max_value=0.50, step=0.01, format="%.2f",
                                help="10% es la proporción normal de horas críticas en los datos.")
             solo_frec = st.checkbox("Excluir combinaciones poco frecuentes", value=True)
 
@@ -217,13 +248,9 @@ with tab_sim:
                         'comprobado; debe validarse con el área de operación antes de aplicarse.</p>', unsafe_allow_html=True)
 
 # ================================================================ 2. PLAN DE INTERVENCION
-# supuestos del ROI (fuentes en el notebook, Parte D.4)
-TEY_MEDIO, USD_CLP, UTA = 133.51, 903.38, 865_812
-SUELDO_DS, GPU_USD_HORA = 1_423_554, 0.42
-C_MODELO = 2 * SUELDO_DS + 0.25 * SUELDO_DS * 12 + 365 * GPU_USD_HORA * USD_CLP
-
 with tab_plan:
-    ranking = cargar("plan_ranking.csv", "Parte D")
+    if ranking is None:
+        ranking = cargar("plan_ranking.csv", "Parte D")
     if ranking is None:
         st.info("Sin el ranking de test no se puede calcular el plan. Ejecuta la celda de exportación de la Parte D.")
     else:
@@ -235,7 +262,7 @@ with tab_plan:
         c1, c2 = st.columns([1, 2.6], gap="large")
         with c1:
             st.subheader("Capacidad de intervención")
-            horas = st.slider("Horas que operación puede intervenir por día", 1, 8, 3,
+            horas = con_reinicio(st.slider, "Horas que operación puede intervenir por día", "horas", 3, min_value=1, max_value=8,
                               help="Supuesto base: 3 horas de cada 24 (12,5% de las horas).")
             k = int(round(horas / 24 * n))
             cap_m = int(acum[k - 1])
@@ -288,11 +315,11 @@ with tab_plan:
         st.subheader("Retorno de la inversión anual")
         r1, r2 = st.columns([1, 2.6], gap="large")
         with r1:
-            c_crit_uta = st.slider("Costo evitado por hora crítica corregida (UTA)", 0.1, 10.0, 1.0, 0.1,
+            c_crit_uta = con_reinicio(st.slider, "Costo evitado por hora crítica corregida (UTA)", "c_crit", 1.0, min_value=0.1, max_value=10.0, step=0.1,
                                    help="No hay un valor publicado: la norma evalúa % de horas, no multa por hora. "
                                         "Mover para ver la sensibilidad.")
-            reduccion = st.slider("Reducción de carga al intervenir (%)", 1, 15, 5) / 100
-            precio = st.slider("Precio de la energía (USD/MWh)", 40.0, 200.0, 96.1, 0.1,
+            reduccion = con_reinicio(st.slider, "Reducción de carga al intervenir (%)", "reduccion", 5, min_value=1, max_value=15) / 100
+            precio = con_reinicio(st.slider, "Precio de la energía (USD/MWh)", "precio", 96.1, min_value=40.0, max_value=200.0, step=0.1,
                                help="Base: costo marginal promedio de julio 2026, barra Quillota (CNE).")
         c_int = TEY_MEDIO * reduccion * precio * USD_CLP
         h_anio = horas * 365
@@ -352,34 +379,38 @@ with tab_acc:
                 f'<th>Plazo</th><th>Recursos</th></tr>{filas}</table>', unsafe_allow_html=True)
 
     st.subheader("Indicadores de seguimiento")
+    v = (lambda x, f: f(x) if x else "—")
     kpi = pd.DataFrame([
-        ["Horas críticas detectadas a tiempo", "Críticas reales dentro del ranking diario / críticas reales", "≥ 90%", "94,5%"],
-        ["Precisión de las intervenciones", "Intervenciones en horas que eran críticas / intervenciones", "≥ 70%", "76,3%"],
-        ["Falsas alarmas", "Intervenciones en horas no críticas, por día", "≤ 1 por día", "0,7 por día"],
+        ["Horas críticas detectadas a tiempo", "Críticas reales dentro del ranking diario / críticas reales", "≥ 90%", v(MB, lambda b: f"{dec(b['recall'] * 100)}%")],
+        ["Precisión de las intervenciones", "Intervenciones en horas que eran críticas / intervenciones", "≥ 70%", v(MB, lambda b: f"{dec(b['prec'] * 100)}%")],
+        ["Falsas alarmas", "Intervenciones en horas no críticas, por día", "≤ 1 por día", v(MB, lambda b: f"{dec(b['fp_dia'])} por día")],
         ["Tiempo de respuesta", "Minutos entre la alerta y el ajuste de carga", "≤ 15 min", "Se mide en operación"],
-        ["Horas sobre 80 mg/m³", "% de horas de operación con NOx crítico (CEMS)", "Bajo 10% y bajando", "10,1% sin plan"],
-        ["Desempeño del modelo", "F1 macro mensual con las horas nuevas", "≥ 0,80 (alerta si cae 5 puntos)", "0,853"],
-        ["Costo de intervenir", "Energía no vendida por intervenciones, mensual", "Dentro del presupuesto", "~$53 millones al mes"]],
+        ["Horas sobre 80 mg/m³", "% de horas de operación con NOx crítico (CEMS)", "Bajo el nivel sin plan y bajando", v(MB, lambda b: f"{dec(b['tasa_crit'] * 100)}% sin plan")],
+        ["Desempeño del modelo", "F1 macro mensual con las horas nuevas", "≥ 0,80 (alerta si cae 5 puntos)", dec(F1_TEST, 3)],
+        ["Costo de intervenir", "Energía no vendida por intervenciones, mensual", "Dentro del presupuesto", f"~{pesos(3 * 365 * C_INT_BASE / 12 / 1e6)} millones al mes".replace("$", "$")]],
         columns=["Indicador", "Cómo se mide", "Meta", "Valor en test / base"])
     filas = "".join(f"<tr><td><b>{r[0]}</b></td><td>{r[1]}</td><td>{r[2]}</td><td>{r[3]}</td></tr>"
                     for r in kpi.itertuples(index=False))
-    st.markdown('<table class="hmi"><tr><th>Indicador</th><th>Cómo se mide</th><th>Meta</th><th>Valor en test o base</th></tr>'
+    st.markdown('<table class="hmi"><tr><th>Indicador</th><th>Cómo se mide</th><th>Meta</th><th>Valor en test o MB</th></tr>'
                 f'{filas}</table>', unsafe_allow_html=True)
-    st.markdown('<p class="nota">Valores en test con capacidad de 3 h/día. El costo mensual es 1.095 horas × $579.515 / 12.</p>',
+    st.markdown('<p class="nota">Valores en test con capacidad de 3 h/día. El costo mensual es 1.095 horas × ' + pesos(C_INT_BASE) + ' / 12.</p>',
                 unsafe_allow_html=True)
 
     st.subheader("Riesgos y reentrenamiento")
     a, b = st.columns(2, gap="large")
     with a:
-        st.markdown("""
-**Horas críticas no detectadas.** 41 de 741 en test (5,5%), unas 49 al año. Quedan cubiertas por el analizador continuo (CEMS), que sigue operando como respaldo: el modelo prioriza, no reemplaza la medición.
+        if MB:
+            st.markdown(f"""
+**Horas críticas no detectadas.** {MB['perdidas']} de {MB['tot']} en test ({dec((1 - MB['recall']) * 100)}%), unas {MB['perdidas_anio']:.0f} al año. Quedan cubiertas por el analizador continuo (CEMS), que sigue operando como respaldo: el modelo prioriza, no reemplaza la medición.
 
-**Falsas alarmas.** Cerca de 1 de cada 4 intervenciones ocurre en una hora que no era crítica: ~260 horas al año, unos $151 millones en energía no vendida. Es el principal costo del plan.
+**Falsas alarmas.** Cerca de {dec((1 - MB['prec']) * 100, 0)}% de las intervenciones ocurre en una hora que no era crítica: ~{MB['fp_anio']:.0f} horas al año, unos {pesos(MB['fp_anio'] * C_INT_BASE / 1e6)} millones en energía no vendida. Es el principal costo del plan.
 
-**Supuestos del beneficio.** El ROI supone que bajar la carga corrige siempre la hora crítica y que el costo evitado por hora supera 0,89 UTA. Ambos deben validarse en planta.
+**Supuestos del beneficio.** El ROI supone que bajar la carga corrige siempre la hora crítica y que el costo evitado por hora supera {dec(MB['eq'], 2)} UTA. Ambos deben validarse en planta.
 
 **Origen de los datos.** El modelo se entrenó con una turbina en Turquía (2011–2015). Para una central chilena hay que reentrenarlo con sus propios datos del CEMS antes de usarlo.
 """)
+        else:
+            st.info("Sube plan_ranking.csv en la pestaña del plan para ver las cifras de riesgo.")
     with b:
         st.markdown("""
 **Cada cuánto reentrenar.** TabPFN no ajusta pesos: aprende del contexto. "Reentrenar" es actualizar ese contexto con las horas recientes.
